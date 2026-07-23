@@ -100,15 +100,31 @@ static int plugin_mode_opt_in(int ac, char **av)
 
 /* Env var Slurm exports to prolog/epilog scripts when a SPANK option was set,
  * named SPANK__SLURM_SPANK_OPTION_<plugin>_<option>. Here the plugin is
- * "spank_ebpf" and the option is "ebpf". This is the mechanism prolog scripts
- * are meant to use; spank_option_getopt() does not resolve the option in the
- * S_CTX_JOB_SCRIPT context (verified on Slurm 25.11). */
+ * "spank_ebpf" and the option is "ebpf". */
 #define EBPF_OPT_ENV "SPANK__SLURM_SPANK_OPTION_spank_ebpf_ebpf"
 
 /*
  * job_requested_ebpf() — did the user ask for eBPF on this job?
  *
- * Client support caveat, verified on Slurm 25.11 (OpenHPC/hpck.it builds):
+ * spank_option_getopt() is documented (slurm/spank.h) as valid from
+ * slurm_spank_job_prolog/epilog, but it does NOT resolve the option there on
+ * Slurm 25.11 (both the OpenHPC 25.11.4 and hpck.it 25.11.5 el8 builds used
+ * here): it returns ESPANK_ERROR ("option wasn't used") for a job where the
+ * option demonstrably WAS used. Proof: with --ebpf given an argument
+ * (has_arg=1, e.g. `srun --ebpf=1`), a debug build logged
+ * `spank_option_getopt() == 3000` (ESPANK_ERROR, per
+ * /usr/include/slurm/slurm_errno.h) in the very same prolog call where
+ * getenv(EBPF_OPT_ENV) read "1" — i.e. Slurm's own env-based transport had
+ * the value while the documented API call to read it did not. Switching the
+ * option to take an argument did not fix spank_option_getopt() in this
+ * context, so the option is kept as a plain flag (has_arg=0, simpler for
+ * users) and step 1 below is kept only as a cheap first check that costs
+ * nothing when it fails. SchedMD's own changelog (slurm-25.11.md, "Changes
+ * in 25.11.3": "Avoid failure for spank options that do not require
+ * arguments") shows this general area — has_arg=0 options carried across
+ * contexts — has had recent, real bugs; what's covered here is not.
+ *
+ * Client support caveat, also verified live:
  *   - `srun --ebpf ...` works: the option reaches the prolog through
  *     EBPF_OPT_ENV, so the exporter is enabled for that job.
  *   - `sbatch --ebpf ...` may report "unrecognized option" depending on the
@@ -122,7 +138,8 @@ static int job_requested_ebpf(spank_t sp)
 {
     char *optarg = NULL;
 
-    /* 1) Allocator/task context: the API resolves the option value. */
+    /* 1) Allocator/task context: the API resolves the option value there.
+     *    Not relied upon in job_script context, see the comment above. */
     if (spank_option_getopt(sp, &spank_options[0], &optarg) == ESPANK_SUCCESS)
         return 1;
 

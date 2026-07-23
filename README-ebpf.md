@@ -98,6 +98,17 @@ pas l'environnement utilisateur, donc ni `--ebpf` ni une variable `SLURM_EBPF`
 n'y parviennent. Pour un site où la soumission passe surtout par `sbatch`,
 préférer `mode=always`.
 
+Point technique documenté dans le code (`job_requested_ebpf()`) : la
+documentation de Slurm indique que `spank_option_getopt()` doit fonctionner
+depuis le prolog et l'épilogue, mais ce n'est pas le cas sur les deux builds
+25.11 testés ici. Elle y renvoie systématiquement `ESPANK_ERROR` (« l'option
+n'a pas été utilisée ») pour un job où l'option a pourtant bien été passée,
+ce qui a été vérifié en comparant sa valeur de retour à celle de la variable
+d'environnement pour le même job. Donner un argument à l'option (`--ebpf=1`
+au lieu d'un simple drapeau) ne corrige pas ce comportement : le plugin lit
+donc l'option depuis cette variable d'environnement, seule voie fiable
+constatée dans ce contexte.
+
 ## Vérifier que ça marche
 
 Soumettre un job, puis regarder le compteur et l'état du service sur le nœud
