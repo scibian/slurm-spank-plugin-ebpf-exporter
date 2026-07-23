@@ -26,9 +26,16 @@
  *   # opt-in mode: only jobs that request it enable the exporter
  *   optional /usr/lib64/slurm/spank_ebpf.so mode=opt-in
  *
- * Opt-in usage (see job_requested_ebpf() for the detection details and its
- * client caveats):
+ * Opt-in usage (see job_requested_ebpf() for the detection details):
+ *   sbatch --ebpf my_script.sh
  *   srun --ebpf ./my_app
+ *
+ * For `sbatch --ebpf`/`salloc --ebpf` to be accepted, the plugin and its
+ * plugstack.conf entry must also be installed on the submission host (login
+ * node, or wherever sbatch/salloc run) — not only on compute nodes. Without
+ * that, sbatch's own CLI parser rejects --ebpf as an unrecognized option
+ * before the job is even submitted. See slurm_spank_init() for why this is
+ * needed on top of the static spank_options[] table.
  *
  * Dependencies: systemd (systemctl), flock (util-linux).
  * The ebpf_exporter service must be installed but NOT enabled at boot.
@@ -124,15 +131,14 @@ static int plugin_mode_opt_in(int ac, char **av)
  * arguments") shows this general area — has_arg=0 options carried across
  * contexts — has had recent, real bugs; what's covered here is not.
  *
- * Client support caveat, also verified live:
- *   - `srun --ebpf ...` works: the option reaches the prolog through
- *     EBPF_OPT_ENV, so the exporter is enabled for that job.
- *   - `sbatch --ebpf ...` may report "unrecognized option" depending on the
- *     build, and a batch job's prolog does not see the user environment via
- *     spank_getenv(), so neither --ebpf nor SLURM_EBPF reaches it there.
- * For sbatch-heavy sites, prefer mode=always. The SLURM_EBPF check below is
- * kept because it is effective wherever the job environment is exposed to the
- * prolog/epilog context; it is a no-op where it is not.
+ * Client support, verified live with both `srun --ebpf ...` and
+ * `sbatch --ebpf ...` (the latter requires spank_option_register() in
+ * slurm_spank_init(), see there): both reach the prolog through EBPF_OPT_ENV,
+ * including two overlapping `sbatch --ebpf` jobs on the same node (reference
+ * counter goes 0->1->2->1->0 correctly). A batch job's prolog does not see
+ * the user's shell environment via spank_getenv(), so plain
+ * `export SLURM_EBPF=1` in a batch script does NOT reach it; step 3 below
+ * only helps in contexts where the job environment is exposed.
  */
 static int job_requested_ebpf(spank_t sp)
 {
@@ -278,6 +284,19 @@ static int service_stop(void)
 int slurm_spank_init(spank_t sp, int ac, char **av)
 {
     int i;
+
+    /* The static spank_options[] table above is NOT loaded in ALLOCATOR
+     * context (sbatch/salloc) — only in local (srun) and remote context.
+     * Without this explicit call, `sbatch --ebpf` fails at the CLI with
+     * "unrecognized option '--ebpf'": sbatch never even parses it as a
+     * plugin option. Confirmed live: `sbatch --help` did not list --ebpf
+     * until this call was added, and did afterwards. Real plugins that
+     * support sbatch/salloc do the same (e.g. auks' slurm-spank-auks.c,
+     * Frey's gridengine_compat.c). spank_option_register() must be called
+     * from slurm_spank_init() (the only context it is valid from); calling
+     * it unconditionally in every context is fine and is what auks does. */
+    spank_option_register(sp, &spank_options[0]);
+
     for (i = 0; i < ac; i++) {
         if (strncmp(av[i], "mode=", 5) == 0) {
             const char *m = av[i] + 5;

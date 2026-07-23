@@ -58,56 +58,74 @@ configuration du plugin dans un fichier séparé sous `plugstack.conf.d/` :
     include /etc/slurm/plugstack.conf.d/*.conf
 
     # /etc/slurm/plugstack.conf.d/ebpf.conf
-    required /usr/lib64/slurm/spank_ebpf.so mode=always
+    optional /usr/lib64/slurm/spank_ebpf.so mode=opt-in
 
-Redémarrer ensuite `slurmd` sur les nœuds de calcul. Le chargement se lit dans
-le log de slurmd :
+**Point capital pour le mode opt-in, à ne pas manquer** : contrairement à un
+plugin qui ne servirait qu'au calcul, celui-ci doit être installé et déclaré
+**à la fois sur les nœuds de calcul et sur les nœuds de soumission** (login,
+contrôleur — partout où `sbatch`/`srun`/`salloc` s'exécutent). Sans ça,
+`sbatch --ebpf` échoue immédiatement avec `unrecognized option '--ebpf'`,
+avant même que le job soit soumis : `sbatch` doit charger le plugin
+localement pour reconnaître l'option qu'il enregistre.
+
+Redémarrer `slurmd` sur les nœuds de calcul après la copie du `.so` (pas
+besoin de redémarrer `slurmctld`/`slurmdbd` : `sbatch` et `srun` relisent la
+configuration à chaque invocation, sans démon à relancer). Le chargement se
+lit dans le log de slurmd :
 
     spank: /etc/slurm/plugstack.conf.d/ebpf.conf:1: Loaded plugin spank_ebpf.so
+
+Et côté nœud de soumission, l'option apparaît dans l'aide :
+
+    sbatch --help | grep ebpf
+          --ebpf                  Enable eBPF observability (ebpf_exporter) for this job
 
 ## Les deux modes
 
 Le mode se choisit par l'argument `mode=` sur la ligne du plugin.
 
-### mode=always
-
-Tout job qui démarre sur le nœud active l'exporter, sans que l'utilisateur
-ait rien à faire. C'est le mode recommandé pour une observabilité
-systématique, et le seul qui se comporte de façon identique quel que soit le
-client de soumission.
-
-    required /usr/lib64/slurm/spank_ebpf.so mode=always
-
-### mode=opt-in
+### mode=opt-in (recommandé en production)
 
 Seuls les jobs qui le demandent activent l'exporter, via l'option `--ebpf` :
 
     optional /usr/lib64/slurm/spank_ebpf.so mode=opt-in
 
+    sbatch --ebpf mon_script.sh
     srun --ebpf ./mon_app
 
-Pour que le client reconnaisse `--ebpf`, le plugin doit aussi être installé et
-déclaré sur les nœuds de soumission (login, contrôleur), pas seulement sur les
-nœuds de calcul.
+Validé de bout en bout avec les deux commandes, y compris deux jobs
+`sbatch --ebpf` qui se recouvrent sur le même nœud (compteur de référence
+correct : 0 → 1 → 2 → 1 → 0). Un job soumis sans `--ebpf` reste totalement
+neutre, aucune trace du plugin dans le log de slurmd.
 
-Une limite constatée sur Slurm 25.11 (paquets OpenHPC et hpck.it) : `srun
---ebpf` fonctionne, l'option atteignant le prolog par la variable
-d'environnement que Slurm expose aux scripts de prolog. En revanche `sbatch
---ebpf` peut être rejeté selon le build, et le prolog d'un job batch ne voit
-pas l'environnement utilisateur, donc ni `--ebpf` ni une variable `SLURM_EBPF`
-n'y parviennent. Pour un site où la soumission passe surtout par `sbatch`,
-préférer `mode=always`.
+Pour que `sbatch --ebpf` fonctionne (et pas seulement `srun --ebpf`), le code
+enregistre explicitement l'option dans `slurm_spank_init()` via
+`spank_option_register()`. Sans cet appel, la table statique du plugin n'est
+tout simplement pas chargée quand `sbatch`/`salloc` tournent (contexte
+« allocateur ») : c'est documenté dans `slurm/spank.h` et confirmé par des
+plugins réels comportant le même besoin (le plugin Auks, ou
+`gridengine_compat.c` de l'université du Delaware). C'est pour ça que
+l'installation sur les nœuds de soumission, ci-dessus, est indispensable.
 
 Point technique documenté dans le code (`job_requested_ebpf()`) : la
-documentation de Slurm indique que `spank_option_getopt()` doit fonctionner
-depuis le prolog et l'épilogue, mais ce n'est pas le cas sur les deux builds
-25.11 testés ici. Elle y renvoie systématiquement `ESPANK_ERROR` (« l'option
-n'a pas été utilisée ») pour un job où l'option a pourtant bien été passée,
-ce qui a été vérifié en comparant sa valeur de retour à celle de la variable
-d'environnement pour le même job. Donner un argument à l'option (`--ebpf=1`
-au lieu d'un simple drapeau) ne corrige pas ce comportement : le plugin lit
-donc l'option depuis cette variable d'environnement, seule voie fiable
-constatée dans ce contexte.
+documentation de Slurm indique que `spank_option_getopt()` doit aussi
+fonctionner depuis le prolog et l'épilogue eux-mêmes, mais ce n'est pas le
+cas sur les deux builds 25.11 testés ici (elle y renvoie systématiquement
+`ESPANK_ERROR`, vérifié avec la valeur numérique exacte). Le plugin lit donc
+l'option depuis la variable d'environnement que Slurm expose au prolog, seule
+voie fiable constatée dans ce contexte précis — ce qui n'empêche pas
+`sbatch --ebpf` de fonctionner, la variable étant bien renseignée dès lors
+que l'option est correctement enregistrée à la soumission.
+
+### mode=always
+
+Tout job qui démarre sur le nœud active l'exporter, sans que l'utilisateur
+ait rien à faire :
+
+    required /usr/lib64/slurm/spank_ebpf.so mode=always
+
+Plus simple (pas besoin d'installer le plugin sur les nœuds de soumission),
+mais impose l'exporter à tous les jobs sans distinction.
 
 ## Vérifier que ça marche
 
@@ -128,11 +146,12 @@ Les traces du plugin apparaissent dans le log de slurmd :
     spank_ebpf: stopping ebpf_exporter
 
 Pour éprouver le compteur, lancer deux jobs qui se recouvrent sur le même
-nœud. La partition doit alors autoriser le partage (`OverSubscribe`) si elle
-n'a qu'un seul nœud, sinon les deux jobs s'exécutent l'un après l'autre. La
-séquence attendue est un démarrage au premier prolog, le compteur qui monte à
-2, puis redescend à 1 sans arrêter l'exporter, et l'arrêt seulement au dernier
-épilogue.
+nœud (`sbatch --ebpf` deux fois de suite à quelques secondes d'écart suffit
+en mode opt-in). La partition doit alors autoriser le partage
+(`OverSubscribe`) si elle n'a qu'un seul nœud, sinon les deux jobs s'exécutent
+l'un après l'autre. La séquence attendue est un démarrage au premier prolog,
+le compteur qui monte à 2, puis redescend à 1 sans arrêter l'exporter, et
+l'arrêt seulement au dernier épilogue.
 
 ## Modification de la configuration seule
 
