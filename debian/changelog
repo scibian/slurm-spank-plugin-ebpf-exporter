@@ -1,0 +1,17 @@
+slurm-spank-plugin-ebpf (0.1sci9u1) scibian9; urgency=medium
+
+  * debian/rules: build and install through the upstream Makefile, with
+    SLURM_LIBDIR set to /usr/lib/slurm and the plugstack snippet installed as
+    /etc/slurm/plugstack.conf.d/ebpf.conf. The RPM path (/usr/lib64/slurm)
+    written in the sample snippet is rewritten at install time.
+  * debian/rules: append -fPIC and -shared to the flags exported by
+    dpkg-buildflags, which would otherwise override the upstream defaults and
+    break the link of the shared object.
+  * debian/control: describe the plugin, depend on systemd (the plugin drives
+    ebpf_exporter with systemctl), bump to debhelper compat 10.
+  * Drop debian/slurm-spank-plugin-ebpf.install, superseded by the Makefile
+    install target.
+  * Add README.Debian documenting the install paths, the two modes and the
+    submission-host requirement of opt-in mode.
+
+ -- Kwame AMEDODJI <kwame-externe.amedodji@edf.fr>  Fri, 14 Aug 2026 08:40:00 +0200

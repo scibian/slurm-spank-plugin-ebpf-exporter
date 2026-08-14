@@ -1,0 +1,7 @@
+*.so
+debian/files
+debian/*.substvars
+debian/*.debhelper.log
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/slurm-spank-plugin-ebpf/

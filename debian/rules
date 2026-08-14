@@ -1,0 +1,40 @@
+#!/usr/bin/make -f
+# Packaging for the ebpf_exporter SPANK plugin.
+#
+# Build and install both go through the upstream Makefile; only the install
+# paths and the build flags are adjusted here.
+
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/default.mk
+
+# Where Slurm looks for its plugins on Scibian. The upstream Makefile defaults
+# to the RPM layout (/usr/lib64/slurm), which does not exist here. Change this
+# single line if the local Slurm build uses another directory (for instance
+# /usr/lib/$(DEB_HOST_MULTIARCH)/slurm-wlm).
+SLURM_LIBDIR       := /usr/lib/slurm
+PLUGSTACK_CONF_DIR := /etc/slurm/plugstack.conf.d
+
+# The upstream Makefile declares CFLAGS/LDFLAGS with ?=, so the values
+# exported by dpkg-buildflags win and would drop -fPIC and -shared. Both are
+# appended back on the make command line, which also keeps the hardening flags.
+MAKE_FLAGS := \
+	SLURM_LIBDIR=$(SLURM_LIBDIR) \
+	PLUGSTACK_CONF_DIR=$(PLUGSTACK_CONF_DIR) \
+	CFLAGS="$(CFLAGS) $(CPPFLAGS) -Wall -fPIC" \
+	LDFLAGS="$(LDFLAGS) -shared"
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	dh_auto_build -- $(MAKE_FLAGS)
+
+override_dh_auto_install:
+	dh_auto_install -- $(MAKE_FLAGS)
+	# The sample plugstack snippet ships the RPM path; point it at the
+	# directory the plugin is actually installed in.
+	sed -i 's,/usr/lib64/slurm/,$(SLURM_LIBDIR)/,g' \
+		debian/slurm-spank-plugin-ebpf$(PLUGSTACK_CONF_DIR)/ebpf.conf
+
+override_dh_auto_clean:
+	dh_auto_clean -- $(MAKE_FLAGS)

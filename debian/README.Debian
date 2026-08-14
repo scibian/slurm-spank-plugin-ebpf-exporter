@@ -1,0 +1,54 @@
+slurm-spank-plugin-ebpf for Debian/Scibian
+==========================================
+
+Files installed
+---------------
+
+  /usr/lib/slurm/spank_ebpf.so           the plugin itself
+  /etc/slurm/plugstack.conf.d/ebpf.conf  its plugstack declaration (conffile)
+
+Upstream targets the RPM layout (/usr/lib64/slurm). The Debian build installs
+into /usr/lib/slurm and rewrites the path inside ebpf.conf accordingly. If the
+local Slurm build looks for its plugins somewhere else, change SLURM_LIBDIR at
+the top of debian/rules and rebuild.
+
+Enabling the plugin
+-------------------
+
+Slurm only reads plugstack.conf.d if /etc/slurm/plugstack.conf includes it:
+
+  include /etc/slurm/plugstack.conf.d/*.conf
+
+That line is not shipped by this package, since plugstack.conf belongs to the
+Slurm packages. Add it, then restart slurmd on the compute nodes. The load
+shows up in the slurmd log:
+
+  spank: /etc/slurm/plugstack.conf.d/ebpf.conf:1: Loaded plugin spank_ebpf.so
+
+The two modes
+-------------
+
+The shipped ebpf.conf enables "always" mode: every job that starts on the node
+turns ebpf_exporter on. To restrict monitoring to jobs submitted with --ebpf,
+comment that line and uncomment the opt-in one:
+
+  # required /usr/lib/slurm/spank_ebpf.so mode=always
+  optional /usr/lib/slurm/spank_ebpf.so mode=opt-in
+
+Opt-in mode needs this package installed and declared on submission hosts as
+well (login nodes, wherever sbatch/salloc run), not only on compute nodes.
+Without it sbatch rejects --ebpf as an unrecognized option before the job is
+even submitted, because the option is registered by the plugin itself.
+
+Changing the mode does not require rebuilding the package: edit the conffile
+and restart slurmd.
+
+Runtime expectations
+--------------------
+
+ebpf_exporter must be installed on the compute nodes but left disabled at boot
+(systemctl disable ebpf_exporter): the plugin owns its lifecycle. It calls
+systemctl and uses flock(2) on /run/ebpf_exporter.refcount, so systemd and
+util-linux are needed on the node.
+
+ -- Kwame AMEDODJI <kwame-externe.amedodji@edf.fr>  Fri, 14 Aug 2026 08:40:00 +0200

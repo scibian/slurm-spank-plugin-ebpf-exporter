@@ -1,0 +1,6 @@
+# Local tooling and build leftovers have no place in the native tarball.
+tar-ignore = .git
+tar-ignore = .gitignore
+tar-ignore = .claude
+tar-ignore = debian/files
+tar-ignore = spank_ebpf.so
