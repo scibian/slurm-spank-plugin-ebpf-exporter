@@ -1,3 +1,9 @@
+slurm-spank-plugin-ebpf-exporter (0.1-0sci13u1) scibian13; urgency=medium
+
+  * initial release
+
+ -- Kwame AMEDODJI <kwame-externe.amedodji@edf.fr>  Mon, 17 Aug 2026 11:58:11 +0200
+
 slurm-spank-plugin-ebpf-exporter (0.1-0sci12u1) scibian12; urgency=medium
 
   * initial release
