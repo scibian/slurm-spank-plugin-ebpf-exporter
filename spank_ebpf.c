@@ -57,6 +57,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <limits.h>
 
 SPANK_PLUGIN(spank_ebpf, 1);
 
@@ -185,38 +186,25 @@ static int job_requested_ebpf(spank_t sp)
 
 /* ── Reference counter, guarded by flock() ────────────────────────────── */
 
-static int refcount_read(void)
-{
-    FILE *f = fopen(REFCOUNT_FILE, "r");
-    int count = 0;
-    if (f) {
-        if (fscanf(f, "%d", &count) != 1)
-            count = 0;
-        fclose(f);
-    }
-    return count;
-}
-
-static int refcount_write(int count)
-{
-    FILE *f = fopen(REFCOUNT_FILE, "w");
-    if (!f) {
-        slurm_error("spank_ebpf: cannot write %s: %s",
-                     REFCOUNT_FILE, strerror(errno));
-        return -1;
-    }
-    fprintf(f, "%d\n", count);
-    fclose(f);
-    return 0;
-}
-
 /*
  * refcount_change() — increment (+1) or decrement (-1) the counter under an
- * exclusive lock. Returns the new value, or -1 on error.
+ * exclusive lock.
+ *
+ * The lock, read and write all use the same file descriptor so the complete
+ * read-modify-write operation is serialized against concurrent jobs.
+ *
+ * Returns the new counter value, or -1 on error.
  */
 static int refcount_change(int delta)
 {
-    int fd, count, new_count;
+    int fd;
+    int count = 0;
+    int new_count;
+    char buf[64];
+    char *end;
+    ssize_t nread;
+    long value;
+    int len;
 
     fd = open(REFCOUNT_FILE, O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
@@ -231,17 +219,81 @@ static int refcount_change(int delta)
         return -1;
     }
 
-    count = refcount_read();
+    /*
+     * Keep the entire read-modify-write sequence on the descriptor that owns
+     * the lock. Reopening REFCOUNT_FILE here would mean operating on a path
+     * rather than necessarily on the inode protected by this flock().
+     */
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        slurm_error("spank_ebpf: cannot seek %s: %s",
+                    REFCOUNT_FILE, strerror(errno));
+        goto error;
+    }
+
+    nread = read(fd, buf, sizeof(buf) - 1);
+    if (nread < 0) {
+        slurm_error("spank_ebpf: cannot read %s: %s",
+                    REFCOUNT_FILE, strerror(errno));
+        goto error;
+    }
+
+    if (nread > 0) {
+        buf[nread] = '\0';
+        errno = 0;
+        value = strtol(buf, &end, 10);
+
+        if (errno == 0 && end != buf &&
+            value >= 0 && value <= INT_MAX &&
+            (*end == '\n' || *end == '\0')) {
+            count = (int)value;
+        } else {
+            slurm_error("spank_ebpf: invalid refcount in %s; resetting to 0",
+                        REFCOUNT_FILE);
+        }
+    }
+
     new_count = count + delta;
     if (new_count < 0)
         new_count = 0;
 
-    refcount_write(new_count);
+    len = snprintf(buf, sizeof(buf), "%d\n", new_count);
+    if (len < 0 || (size_t)len >= sizeof(buf)) {
+        slurm_error("spank_ebpf: failed to format refcount");
+        goto error;
+    }
 
-    flock(fd, LOCK_UN);
+    /*
+     * Rewrite the value while still holding the lock. Truncate first so that
+     * replacing a longer value with a shorter one cannot leave stale bytes.
+     */
+    if (ftruncate(fd, 0) < 0) {
+        slurm_error("spank_ebpf: cannot truncate %s: %s",
+                    REFCOUNT_FILE, strerror(errno));
+        goto error;
+    }
+
+    if (lseek(fd, 0, SEEK_SET) < 0) {
+        slurm_error("spank_ebpf: cannot seek %s: %s",
+                    REFCOUNT_FILE, strerror(errno));
+        goto error;
+    }
+
+    if (write(fd, buf, (size_t)len) != len) {
+        slurm_error("spank_ebpf: cannot write %s: %s",
+                    REFCOUNT_FILE, strerror(errno));
+        goto error;
+    }
+
+    if (flock(fd, LOCK_UN) < 0)
+        slurm_error("spank_ebpf: unlock failed: %s", strerror(errno));
     close(fd);
 
     return new_count;
+
+error:
+    flock(fd, LOCK_UN);
+    close(fd);
+    return -1;
 }
 
 /* ── systemctl start / stop ───────────────────────────────────────────── */
