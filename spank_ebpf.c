@@ -187,6 +187,33 @@ static int job_requested_ebpf(spank_t sp)
 /* ── Reference counter, guarded by flock() ────────────────────────────── */
 
 /*
+ * Write a complete buffer, retrying interrupted and partial writes.
+ */
+static int write_all(int fd, const char *buf, size_t len)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        ssize_t n = write(fd, buf + off, len - off);
+
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+
+        if (n == 0) {
+            errno = EIO;
+            return -1;
+        }
+
+        off += (size_t)n;
+    }
+
+    return 0;
+}
+
+/*
  * refcount_change() — increment (+1) or decrement (-1) the counter under an
  * exclusive lock.
  *
@@ -278,7 +305,7 @@ static int refcount_change(int delta)
         goto error;
     }
 
-    if (write(fd, buf, (size_t)len) != len) {
+    if (write_all(fd, buf, (size_t)len) < 0) {
         slurm_error("spank_ebpf: cannot write %s: %s",
                     REFCOUNT_FILE, strerror(errno));
         goto error;
