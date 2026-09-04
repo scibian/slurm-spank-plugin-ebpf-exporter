@@ -32,10 +32,13 @@
  *
  * For `sbatch --ebpf`/`salloc --ebpf` to be accepted, the plugin and its
  * plugstack.conf entry must also be installed on the submission host (login
- * node, or wherever sbatch/salloc run) — not only on compute nodes. Without
- * that, sbatch's own CLI parser rejects --ebpf as an unrecognized option
- * before the job is even submitted. See slurm_spank_init() for why this is
- * needed on top of the static spank_options[] table.
+ * node, or wherever sbatch/salloc run) — not only on compute nodes.
+ *
+ * The --ebpf option is registered dynamically from slurm_spank_init() in all
+ * SPANK contexts. In particular, this is required in ALLOCATOR context because
+ * sbatch/salloc must know about the option before the job is submitted.
+ *
+ * See slurm_spank_init() for details.
  *
  * Dependencies: systemd (systemctl), flock (util-linux).
  * The ebpf_exporter service must be installed but NOT enabled at boot.
@@ -69,11 +72,24 @@ static int ebpf_requested = 0;
 
 static int _opt_handler(int val, const char *optarg, int remote);
 
-struct spank_option spank_options[] = {
-    { "ebpf", NULL,
-      "Enable eBPF observability (ebpf_exporter) for this job",
-      0, 0, _opt_handler },
-    SPANK_OPTIONS_TABLE_END
+/*
+ * Do NOT export this option through the legacy global spank_options[] table.
+ *
+ * Outside the ALLOCATOR context (notably srun), Slurm automatically discovers
+ * and registers options exported through spank_options[]. Registering that same
+ * option again with spank_option_register() from slurm_spank_init() therefore
+ * creates a duplicate and produces:
+ *
+ *   spank: option "ebpf" provided by both spank_ebpf.so and spank_ebpf.so
+ *
+ * Use dynamic registration exclusively instead. This also allows the option to
+ * be registered in ALLOCATOR context, where sbatch/salloc need it in order to
+ * accept --ebpf on their command line.
+ */
+static struct spank_option ebpf_option = {
+    "ebpf", NULL,
+    "Enable eBPF observability (ebpf_exporter) for this job",
+    0, 0, _opt_handler
 };
 
 static int _opt_handler(int val, const char *optarg, int remote)
@@ -146,7 +162,7 @@ static int job_requested_ebpf(spank_t sp)
 
     /* 1) Allocator/task context: the API resolves the option value there.
      *    Not relied upon in job_script context, see the comment above. */
-    if (spank_option_getopt(sp, &spank_options[0], &optarg) == ESPANK_SUCCESS)
+    if (spank_option_getopt(sp, &ebpf_option, &optarg) == ESPANK_SUCCESS)
         return 1;
 
     /* 2) Prolog/epilog context: Slurm forwards the option as an env var. */
@@ -277,25 +293,46 @@ static int service_stop(void)
 
 /*
  * slurm_spank_init() — called in several contexts. Only used here to validate
- * the mode=... plugin argument and warn on an unknown value. The prolog and
- * epilog re-read the mode locally (see plugin_mode_opt_in()) rather than rely
- * on any state set here.
+ * the mode=... plugin argument, register --ebpf and warn on an unknown value.
+ *
+ * --ebpf is registered dynamically here in every context rather than through
+ * the global spank_options[] table.
+ *
+ * This is important for two reasons:
+ *
+ *   - ALLOCATOR context (sbatch/salloc) does not load the static
+ *     spank_options[] table. Without dynamic registration, sbatch/salloc would
+ *     reject --ebpf as an unknown command-line option before job submission.
+ *
+ *   - In contexts where Slurm does load spank_options[] automatically
+ *     (notably srun/local and remote contexts), also calling
+ *     spank_option_register() for the same option registers it twice and
+ *     results in:
+ *
+ *       spank: option "ebpf" provided by both spank_ebpf.so and spank_ebpf.so
+ *
+ * Therefore dynamic registration is the single source of truth for the option.
+ *
+ * The prolog and epilog still re-read mode= locally (see
+ * plugin_mode_opt_in()) rather than relying on state initialized here, because
+ * those callbacks may execute in a different process/context.
  */
 int slurm_spank_init(spank_t sp, int ac, char **av)
 {
     int i;
 
-    /* The static spank_options[] table above is NOT loaded in ALLOCATOR
-     * context (sbatch/salloc) — only in local (srun) and remote context.
-     * Without this explicit call, `sbatch --ebpf` fails at the CLI with
-     * "unrecognized option '--ebpf'": sbatch never even parses it as a
-     * plugin option. Confirmed live: `sbatch --help` did not list --ebpf
-     * until this call was added, and did afterwards. Real plugins that
-     * support sbatch/salloc do the same (e.g. auks' slurm-spank-auks.c,
-     * Frey's gridengine_compat.c). spank_option_register() must be called
-     * from slurm_spank_init() (the only context it is valid from); calling
-     * it unconditionally in every context is fine and is what auks does. */
-    spank_option_register(sp, &spank_options[0]);
+    /*
+     * Register the option in every context.
+     *
+     * In particular this is required in S_CTX_ALLOCATOR so that sbatch and
+     * salloc know about --ebpf. Because ebpf_option is deliberately not
+     * exported through spank_options[], there is no duplicate registration in
+     * the local/remote contexts.
+     */
+    if (spank_option_register(sp, &ebpf_option) != ESPANK_SUCCESS) {
+        slurm_error("spank_ebpf: failed to register --ebpf");
+        return -1;
+    }
 
     for (i = 0; i < ac; i++) {
         if (strncmp(av[i], "mode=", 5) == 0) {
