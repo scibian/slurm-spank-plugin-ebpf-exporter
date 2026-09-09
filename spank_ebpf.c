@@ -64,6 +64,10 @@ SPANK_PLUGIN(spank_ebpf, 1);
 #define REFCOUNT_FILE "/run/ebpf_exporter.refcount"
 #define SERVICE_NAME  "ebpf_exporter"
 
+/* Absolute path: prolog/epilog run as root, so systemctl must never be
+ * resolved through an inherited PATH. */
+#define SYSTEMCTL "/usr/bin/systemctl"
+
 /* Set by _opt_handler when --ebpf is parsed. Only meaningful in the process
  * that parses the option (allocator/task); used as a last-resort fallback in
  * job_requested_ebpf(). */
@@ -330,14 +334,14 @@ static int service_start(void)
     int rc;
 
     /* Skip a redundant systemctl call if the service is already up. */
-    rc = system("systemctl is-active --quiet " SERVICE_NAME);
+    rc = system(SYSTEMCTL " is-active --quiet " SERVICE_NAME);
     if (rc == 0) {
         slurm_info("spank_ebpf: " SERVICE_NAME " already running");
         return 0;
     }
 
     slurm_info("spank_ebpf: starting " SERVICE_NAME);
-    rc = system("systemctl start " SERVICE_NAME);
+    rc = system(SYSTEMCTL " start " SERVICE_NAME);
     if (rc != 0) {
         slurm_error("spank_ebpf: failed to start " SERVICE_NAME
                      " (exit code %d)", rc);
@@ -351,14 +355,14 @@ static int service_stop(void)
 {
     int rc;
 
-    rc = system("systemctl is-active --quiet " SERVICE_NAME);
+    rc = system(SYSTEMCTL " is-active --quiet " SERVICE_NAME);
     if (rc != 0) {
         slurm_info("spank_ebpf: " SERVICE_NAME " already stopped");
         return 0;
     }
 
     slurm_info("spank_ebpf: stopping " SERVICE_NAME);
-    rc = system("systemctl stop " SERVICE_NAME);
+    rc = system(SYSTEMCTL " stop " SERVICE_NAME);
     if (rc != 0) {
         slurm_error("spank_ebpf: failed to stop " SERVICE_NAME
                      " (exit code %d)", rc);
