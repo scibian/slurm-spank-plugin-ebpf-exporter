@@ -237,7 +237,10 @@ static int refcount_change(int delta)
     long value;
     int len;
 
-    fd = open(REFCOUNT_FILE, O_RDWR | O_CREAT, 0644);
+    /* O_NOFOLLOW: never follow a symlink planted at REFCOUNT_FILE when
+     * writing as root. /run is not user-writable, so this is defence in
+     * depth rather than a fix for a reachable bug. */
+    fd = open(REFCOUNT_FILE, O_RDWR | O_CREAT | O_NOFOLLOW, 0644);
     if (fd < 0) {
         slurm_error("spank_ebpf: cannot open %s: %s",
                      REFCOUNT_FILE, strerror(errno));
