@@ -1,7 +1,7 @@
 %define debug_package %{nil}
 
 Name:		slurm-spank-plugin-ebpf
-Version:	0.0.1
+Version:	0.0.2
 Release:	1%{?dist}.edf
 Summary:	Slurm SPANK plugin to ondemand ebpf_exporter activation.
 
@@ -47,5 +47,11 @@ rm -rf %{buildroot}
 
 
 %changelog
+* Fri Sep 10 2026 Kwame Amedodji <kwame-externe.amedodji@edf.fr> - 0.0.2-1el8.edf
+- Refuse symlinked refcount file
+- Resolve systemctl via absolute path
+- Handle partial refcount writes
+- Make refcount update atomic
+- Fix duplicate SPANK option registration
 * Thu Jul 23 2026 Kwame Amedodji <kwame-externe.amedodji@edf.fr> - 0.0.1-1el8.edf
 - initial el8 release
